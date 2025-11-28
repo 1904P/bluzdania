@@ -1,0 +1,34 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+# параметры
+D = 1.0 
+dt = 0.01
+n_steps = 1000
+t = np.arange(n_steps + 1) * dt
+sigma = np.sqrt(2 * D * dt)
+
+# броуновская траектория
+x = np.zeros(n_steps + 1)
+for i in range(n_steps):
+    x[i+1] = x[i] + sigma * np.random.randn()
+
+# создаём окно и оси
+fig, ax = plt.subplots()
+ax.set_xlim(0, t[-1])
+ax.set_ylim(x.min(), x.max())
+ax.set_title("1D броуновское движение")
+ax.set_xlabel("t")
+ax.set_ylabel("x(t)")
+
+# линия, которую будем обновлять
+line, = ax.plot([], [])
+
+def update(frame):
+    line.set_data(t[:frame], x[:frame])
+    return line,
+
+ani = FuncAnimation(fig, update, frames=n_steps, interval=10)
+
+plt.show()
