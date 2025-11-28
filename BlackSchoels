@@ -1,0 +1,58 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# parameters
+S0 = 100     # начальная цена акции
+mu = 0.10    # средний годовой рост
+sigma = 0.20 # волатильность
+T = 1.0      # время до экспирации опциона (1 год)
+K = 100      # страйк опциона (цена исполнения)
+r = 0.05     # безрисковая ставка
+
+n_steps = 252               # число шагов (дней)
+dt = T / n_steps            # длина шага
+time = np.linspace(0, T, n_steps + 1)  # сетка по времени
+
+# одна траектория цены
+
+S = np.zeros(n_steps + 1)
+S[0] = S0
+
+for i in range(n_steps):
+    # dW ~ sqrt(dt) * N(0,1) — шаг броуновского движения
+    dW = np.sqrt(dt) * np.random.randn()
+    # геометрическое броуновское движение
+    S[i+1] = S[i] * np.exp((mu - 0.5 * sigma**2) * dt + sigma * dW)
+
+
+
+#цена опциона
+
+# "Цена" опциона по пути: внутренняя стоимость max(S_t - K, 0)
+call_intrinsic = np.maximum(S - K, 0)
+
+# Выплата в момент экспирации T
+payoff_T = call_intrinsic[-1]
+# Дисконтированная стоимость (оценка цены сегодня по этой траектории)
+discounted_payoff_T = np.exp(-r * T) * payoff_T
+
+print(f"Выплата опциона в момент T: {payoff_T:.2f}")
+print(f"Дисконтированная стоимость этой выплаты: {discounted_payoff_T:.2f}")
+
+
+# график для живой цены и ее опциона
+
+plt.figure(figsize=(9, 5))
+
+plt.plot(time, S, label="Цена акции S(t)")
+plt.plot(time, call_intrinsic, label="Внутренняя стоимость колл-опциона max(S-K, 0)")
+
+plt.axvline(T, linestyle=":", color="gray")  # вертикальная линия в момент T
+
+plt.title("Одна живая акция и её колл-опцион\n(модель Блэка–Шоулза через броуновское движение)")
+plt.xlabel("Время, годы")
+plt.ylabel("Значение")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
