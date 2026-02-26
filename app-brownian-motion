@@ -1,0 +1,347 @@
+struct ContentView: View {
+    // Режимы
+    @State private var isEditing: Bool = true
+    @State private var startTime: Date? = nil
+
+    // Ввод юзера (строки, как в калькуляторе)
+    @State private var TText: String = "300"        // K
+    @State private var etaText: String = "0.001"    // Pa*s
+    @State private var RText: String = "0.000001"   // m
+
+    // (опционально) численные параметры
+    @State private var dtText: String = "0.01"
+    @State private var stepsText: String = "1000"
+
+    // Зафиксированные константы после нажатия Start
+    @State private var TConst: Double = 300.0
+    @State private var etaConst: Double = 1e-3
+    @State private var RConst: Double = 1e-6
+    @State private var dtConst: Double = 0.01
+    @State private var stepsConst: Int = 1000
+
+    // Данные траектории
+    @State private var t: [Double] = []
+    @State private var x: [Double] = []
+
+    // Ошибка ввода
+    @State private var errorText: String? = nil
+
+    // Константа Больцмана
+    private let kB: Double = 1.380649e-23
+
+    // D считаем только из зафиксированных констант
+    private var DConst: Double {
+        let denom = 6.0 * Double.pi * etaConst * RConst
+        return kB * TConst / denom
+    }
+
+    // D, который пересчитывается от текущего ввода (пока Edit)
+    private var DLive: Double? {
+        guard let T = Double(TText.replacingOccurrences(of: ",", with: ".")),
+              let eta = Double(etaText.replacingOccurrences(of: ",", with: ".")),
+              let R = Double(RText.replacingOccurrences(of: ",", with: ".")),
+              T > 0, eta > 0, R > 0 else { return nil }
+
+        return kB * T / (6.0 * .pi * eta * R)
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("1D Brownian Motion").font(.title2)
+
+            // График
+            TimelineView(.animation) { _ in
+                plot(frame: currentFrame())
+                    .frame(height: 300)
+                    .padding(.horizontal)
+            }
+
+            // Показ D: живой в Edit, фиксированный после Start
+            Group {
+                if isEditing {
+                    if let d = DLive {
+                        Text("D = \(d, specifier: "%.3e") m²/s")
+                    } else {
+                        Text("D = —")
+                    }
+                } else {
+                    Text("D = \(DConst, specifier: "%.3e") m²/s")
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            // Сообщение об ошибке
+            if let errorText {
+                Text(errorText)
+                    .foregroundStyle(.red)
+                    .font(.footnote)
+                    .padding(.horizontal)
+            }
+
+            // Ввод параметров (когда isEditing == true)
+            VStack(spacing: 10) {
+                inputRow(title: "T (K)", text: $TText, enabled: isEditing)
+                inputRow(title: "η (Pa·s)", text: $etaText, enabled: isEditing)
+                inputRow(title: "R (m)", text: $RText, enabled: isEditing)
+                inputRow(title: "dt (s)", text: $dtText, enabled: isEditing)
+                inputRow(title: "steps", text: $stepsText, enabled: isEditing, keyboard: .numberPad)
+            }
+            .padding(.horizontal)
+
+            // Кнопки управления
+            HStack(spacing: 12) {
+                Button(isRunning ? "Pause" : "Start") {
+                    if isRunning {
+                        // пауза
+                        startTime = nil
+                    } else {
+                        // старт: если мы в режиме редактирования, сначала фиксируем константы
+                        if isEditing {
+                            guard lockConstantsFromInput() else { return }
+                            isEditing = false
+                            generateWithConstants()
+                        }
+                        startTime = Date()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Reset") {
+                    startTime = nil
+                    if !isEditing {
+                        // пересчитать с теми же const
+                        generateWithConstants()
+                    } else {
+                        // просто очистить график (или оставить старый)
+                        t = []
+                        x = []
+                    }
+                }
+                .buttonStyle(.bordered)
+
+                Button(isEditing ? "Edit: ON" : "Edit") {
+                    // вернуться к редактированию (анимацию стопаем)
+                    startTime = nil
+                    isEditing = true
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Spacer()
+        }
+        .padding(.top)
+    }
+
+    private var isRunning: Bool { startTime != nil }
+
+    // UI helpers
+    private func inputRow(title: String,
+                          text: Binding<String>,
+                          enabled: Bool,
+                          keyboard: UIKeyboardType = .decimalPad) -> some View {
+        HStack {
+            Text(title).frame(width: 90, alignment: .leading)
+            TextField("value", text: text)
+                .keyboardType(keyboard)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!enabled)
+        }
+    }
+
+    // Логика: фиксируем константы
+    private func lockConstantsFromInput() -> Bool {
+        errorText = nil
+
+        guard let T = Double(TText.replacingOccurrences(of: ",", with: ".")),
+              let eta = Double(etaText.replacingOccurrences(of: ",", with: ".")),
+              let R = Double(RText.replacingOccurrences(of: ",", with: ".")),
+              let dt = Double(dtText.replacingOccurrences(of: ",", with: ".")),
+              let steps = Int(stepsText.trimmingCharacters(in: .whitespacesAndNewlines))
+        else {
+            errorText = "Ошибка: введи числа (можно с точкой)."
+            return false
+        }
+
+        if T <= 0 { errorText = "T должно быть > 0"; return false }
+        if eta <= 0 { errorText = "η должно быть > 0"; return false }
+        if R <= 0 { errorText = "R должно быть > 0"; return false }
+        if dt <= 0 { errorText = "dt должно быть > 0"; return false }
+        if steps < 10 || steps > 20000 { errorText = "steps: 10…20000"; return false }
+
+        // фиксируем значения как const
+        TConst = T
+        etaConst = eta
+        RConst = R
+        dtConst = dt
+        stepsConst = steps
+        return true
+    }
+
+    // Логика: текущий кадр
+    private func currentFrame() -> Int {
+        guard let start = startTime, !t.isEmpty else { return 1 }
+        let pointsPerSecond = 250.0
+        let elapsed = Date().timeIntervalSince(start)
+        let f = Int(elapsed * pointsPerSecond)
+        return min(max(1, f), t.count - 1)
+    }
+
+    // Логика: генерация по зафиксированным константам
+    private func generateWithConstants() {
+        let steps = stepsConst
+        let dt = dtConst
+        let D = DConst
+        let sigma = sqrt(2.0 * D * dt)
+
+        t = (0...steps).map { Double($0) * dt }
+
+        var path = Array(repeating: 0.0, count: steps + 1)
+        for i in 0..<steps {
+            path[i + 1] = path[i] + sigma * randomNormal()
+        }
+        x = path
+    }
+
+    // Аналог np.random.randn()
+    private func randomNormal() -> Double {
+        var u1 = Double.random(in: 0..<1)
+        let u2 = Double.random(in: 0..<1)
+        if u1 < 1e-12 { u1 = 1e-12 }
+        return sqrt(-2.0 * log(u1)) * cos(2.0 * .pi * u2)
+    }
+
+    // Авто-единицы для оси y (позиция)
+    private func yUnit(for values: ArraySlice<Double>) -> (scale: Double, unit: String) {
+        let maxAbs = max(abs(values.min() ?? 0), abs(values.max() ?? 0))
+
+        if maxAbs >= 1.0 { return (1.0, "m") }
+        if maxAbs >= 1e-3 { return (1e-3, "mm") }
+        if maxAbs >= 1e-6 { return (1e-6, "µm") }
+        if maxAbs >= 1e-9 { return (1e-9, "nm") }
+        return (1e-12, "pm")
+    }
+
+    private func fmtSmart(_ v: Double) -> String {
+        let av = abs(v)
+        if (av != 0 && (av < 1e-3 || av >= 1e4)) {
+            return String(format: "%.2e", v)
+        } else {
+            return String(format: "%.2f", v)
+        }
+    }
+
+    // Рисование + оси + подписи + авто-единицы по y
+    private func plot(frame: Int) -> some View {
+        Canvas { context, size in
+            guard t.count > 1, x.count == t.count else { return }
+            let last = min(frame, t.count - 1)
+
+            // Layout
+            let leftPad: CGFloat = 52
+            let rightPad: CGFloat = 12
+            let topPad: CGFloat = 12
+            let bottomPad: CGFloat = 36
+
+            let plotW = max(1, size.width - leftPad - rightPad)
+            let plotH = max(1, size.height - topPad - bottomPad)
+
+            // Data range
+            let tMin = t[0]
+            let tMax = t[last]
+            let xs = x[0...last]
+            let xMin = xs.min() ?? 0
+            let xMax = xs.max() ?? 1
+
+            let tSpan = max(1e-12, tMax - tMin)
+            let xSpan = max(1e-12, xMax - xMin)
+
+            // Auto units for y
+            let (yScale, yUnitStr) = yUnit(for: xs)
+
+            func map(_ ti: Double, _ xi: Double) -> CGPoint {
+                let px = leftPad + CGFloat((ti - tMin) / tSpan) * plotW
+                let py = topPad + (1.0 - CGFloat((xi - xMin) / xSpan)) * plotH
+                return CGPoint(x: px, y: py)
+            }
+
+            // Axes frame
+            let rect = CGRect(x: leftPad, y: topPad, width: plotW, height: plotH)
+            context.stroke(
+                Path(roundedRect: rect, cornerRadius: 10),
+                with: .color(.secondary.opacity(0.35)),
+                lineWidth: 1
+            )
+
+            // Ticks
+            let nTicks = 4
+
+            // x-axis ticks (time)
+            for i in 0...nTicks {
+                let a = Double(i) / Double(nTicks)
+                let ti = tMin + a * tSpan
+                let xPos = leftPad + CGFloat(a) * plotW
+                let y0 = topPad + plotH
+                let y1 = y0 + 5
+
+                var tick = Path()
+                tick.move(to: CGPoint(x: xPos, y: y0))
+                tick.addLine(to: CGPoint(x: xPos, y: y1))
+                context.stroke(tick, with: .color(.secondary.opacity(0.6)), lineWidth: 1)
+
+                let label = Text(fmtSmart(ti))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                context.draw(label, at: CGPoint(x: xPos, y: y1 + 8), anchor: .top)
+            }
+
+            // y-axis ticks (position, scaled)
+            for i in 0...nTicks {
+                let a = Double(i) / Double(nTicks)
+                let xi = xMax - a * xSpan
+                let yPos = topPad + CGFloat(a) * plotH
+                let x0 = leftPad - 5
+                let x1 = leftPad
+
+                var tick = Path()
+                tick.move(to: CGPoint(x: x0, y: yPos))
+                tick.addLine(to: CGPoint(x: x1, y: yPos))
+                context.stroke(tick, with: .color(.secondary.opacity(0.6)), lineWidth: 1)
+
+                let label = Text(fmtSmart(xi / yScale))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                context.draw(label, at: CGPoint(x: x0 - 2, y: yPos), anchor: .trailing)
+            }
+
+            // Axis labels
+            context.draw(
+                Text("t (s)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary),
+                at: CGPoint(x: leftPad + plotW / 2, y: topPad + plotH + 28),
+                anchor: .center
+            )
+
+            context.draw(
+                Text("x (\(yUnitStr))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary),
+                at: CGPoint(x: 18, y: topPad + plotH / 2),
+                anchor: .center
+            )
+
+            // Trajectory
+            var path = Path()
+            path.move(to: map(t[0], x[0]))
+            if last >= 1 {
+                for i in 1...last { path.addLine(to: map(t[i], x[i])) }
+            }
+            context.stroke(path, with: .color(.blue), lineWidth: 2)
+        }
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+    }
+}
